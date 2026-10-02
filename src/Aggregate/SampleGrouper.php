@@ -27,11 +27,11 @@ final readonly class SampleGrouper {
 
 	/**
 	 * @param  iterable<Sample>               $samples
+	 * @param  array<string,BucketAccumulator> $buckets buckets to keep adding to, so that several
+	 *                                                  log files roll into one batch
 	 * @return array<string,BucketAccumulator>
 	 */
-	public function group(iterable $samples): array {
-		$buckets = [];
-
+	public function group(iterable $samples, array $buckets = []): array {
 		foreach ($samples as $sample) {
 			$key   = new BucketKey(
 				$sample->minute(),

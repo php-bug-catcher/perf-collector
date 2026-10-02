@@ -22,8 +22,14 @@ final readonly class JsonLinesReader {
 	public function __construct(private int $chunkSize = 262_144) {
 	}
 
-	/** @return Generator<int,string,void,int> yields lines, returns the offset reached */
-	public function read(string $path, int $offset): Generator {
+	/**
+	 * @param  int $maxBytes stop after this much, at the next line boundary. A server that was
+	 *                       down for hours leaves a backlog nobody can ship in one request, and
+	 *                       since the cursor does not move on failure that would be a run that
+	 *                       never succeeds again. The budget drains it over several runs.
+	 * @return Generator<int,string,void,int> yields lines, returns the offset reached
+	 */
+	public function read(string $path, int $offset, int $maxBytes = PHP_INT_MAX): Generator {
 		$handle = @fopen($path, 'rb');
 		if ($handle === false) {
 			return $offset;
@@ -54,19 +60,26 @@ final readonly class JsonLinesReader {
 					continue;
 				}
 
-				$complete  = substr($buffer, 0, $lastBreak + 1);
-				$buffer    = substr($buffer, $lastBreak + 1);
-				$consumed += strlen($complete);
+				$complete = substr($buffer, 0, $lastBreak + 1);
+				$buffer   = substr($buffer, $lastBreak + 1);
 
-				if ($discarding) {
-					// The first newline ends the oversized line; what precedes it is its tail.
-					$complete   = substr($complete, (int) strpos($complete, "\n") + 1);
-					$discarding = false;
-				}
+				$lines = explode("\n", $complete);
+				array_pop($lines);  // the empty remainder after the final newline
 
-				foreach (explode("\n", rtrim($complete, "\n")) as $line) {
-					if ($line !== '') {
+				foreach ($lines as $line) {
+					$consumed += strlen($line) + 1;
+
+					if ($discarding) {
+						// This is the tail of the oversized line; its newline ends it.
+						$discarding = false;
+					} elseif ($line !== '') {
 						yield $line;
+					}
+
+					// Counted line by line rather than chunk by chunk, so the budget is a
+					// promise about the batch and not about the buffer that happened to be read.
+					if ($consumed - $offset >= $maxBytes) {
+						return $consumed;
 					}
 				}
 			}

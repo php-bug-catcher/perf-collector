@@ -136,15 +136,47 @@ final class JsonLinesReaderTest extends TestCase {
 		$this->assertSame(filesize($this->log), $offset);
 	}
 
+	/**
+	 * A server that was down for two hours leaves a log nobody can ship in one request, and
+	 * because the cursor does not move on failure that would be a run that never succeeds again.
+	 * A budget drains the backlog over several runs instead.
+	 */
+	public function testAByteBudgetStopsTheRunAtALineBoundary(): void {
+		$this->given("one\ntwo\nthree\nfour\n");
+
+		[$lines, $offset] = $this->read(0, chunkSize: 4, maxBytes: 5);
+
+		$this->assertSame(['one', 'two'], $lines);
+		$this->assertSame(8, $offset);
+	}
+
+	public function testTheNextRunCarriesOnFromWhereTheBudgetRanOut(): void {
+		$this->given("one\ntwo\nthree\nfour\n");
+		[, $offset] = $this->read(0, chunkSize: 4, maxBytes: 5);
+
+		[$lines] = $this->read($offset, chunkSize: 4);
+
+		$this->assertSame(['three', 'four'], $lines);
+	}
+
+	public function testABudgetBiggerThanTheLogChangesNothing(): void {
+		$this->given("one\ntwo\n");
+
+		[$lines, $offset] = $this->read(0, maxBytes: 1_000);
+
+		$this->assertSame(['one', 'two'], $lines);
+		$this->assertSame(8, $offset);
+	}
+
 	private function given(string $contents): void {
 		file_put_contents($this->log, $contents);
 	}
 
 	/** @return array{list<string>, int} */
-	private function read(int $offset, int $chunkSize = 262_144): array {
+	private function read(int $offset, int $chunkSize = 262_144, int $maxBytes = PHP_INT_MAX): array {
 		$reader = new JsonLinesReader(chunkSize: $chunkSize);
 		$lines  = [];
-		$stream = $reader->read($this->log, $offset);
+		$stream = $reader->read($this->log, $offset, $maxBytes);
 		foreach ($stream as $line) {
 			$lines[] = $line;
 		}
