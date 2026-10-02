@@ -1,0 +1,19 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use BugCatcher\PerfCollector\Cli\AggregateCli;
+
+// Installed as a dependency, or checked out and worked on. Nothing else is supported.
+foreach ([__DIR__ . '/../../../autoload.php', __DIR__ . '/../vendor/autoload.php'] as $autoload) {
+	if (is_file($autoload)) {
+		require $autoload;
+
+		exit(AggregateCli::main($argv));
+	}
+}
+
+fwrite(STDERR, 'Composer autoloader not found. Run `composer install`.' . PHP_EOL);
+
+exit(2);

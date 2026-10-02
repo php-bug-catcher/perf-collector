@@ -66,7 +66,21 @@ Doctrine, and is the reference for doing it yourself.
 
 It reads from the stored offset, groups by `(minute, host, normalised path)`, POSTs the batch to
 `/api/perf_buckets` and only then advances the cursor — a failed ship is retried by the next run
-instead of being lost.
+instead of being lost. Once the batch is accepted the log is emptied, so the machine keeps
+nothing; anything the hook appended while the batch was in flight stays for the next run.
+
+`bc-perf-aggregate --help` lists every option. The ones worth knowing about:
+
+| Option | Default | Why you would set it |
+|---|---|---|
+| `--state-dir=PATH` | system temp directory | Where read cursors and the lock file live. |
+| `--rules=PATH` | — | A JSON list of extra normalisation rules, applied before the shipped ones. Add `--no-default-rules` to use only yours. |
+| `--max-bytes=N` | 16777216 | Most bytes read in one run. A backlog from a server outage drains over several runs rather than one request that can never succeed. |
+| `--dry-run` | — | Read, group and report. Ship nothing, move nothing, delete nothing. |
+
+Exit codes: `0` done — including when another run already holds the lock; `1` the batch did not
+reach the server, so cron will hear about it; `2` the command line or the rules file is wrong and
+retrying will not help.
 
 ## Overhead
 

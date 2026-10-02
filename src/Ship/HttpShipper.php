@@ -61,7 +61,7 @@ class HttpShipper {
 		$response = curl_exec($curl);
 		$status   = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
 		$error    = curl_error($curl);
-		curl_close($curl);
+		// No curl_close(): deprecated in 8.5 and a no-op since 8.0. The handle is freed with $curl.
 
 		// A connection that never happened has no status; the caller treats 0 as "not shipped"
 		// and leaves the cursor where it is, so the next run retries the same window.

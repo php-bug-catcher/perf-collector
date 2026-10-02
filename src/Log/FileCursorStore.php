@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BugCatcher\PerfCollector\Log;
 
+use BugCatcher\PerfCollector\Directory;
 use BugCatcher\PerfCollector\Exception\InvalidConfiguration;
 
 /**
@@ -40,9 +41,7 @@ final readonly class FileCursorStore implements CursorStore {
 	}
 
 	public function save(Cursor $cursor): void {
-		if (!is_dir($this->stateDir) && !@mkdir($this->stateDir, 0o777, true) && !is_dir($this->stateDir)) {
-			throw new InvalidConfiguration(sprintf('The state directory "%s" does not exist and cannot be created.', $this->stateDir));
-		}
+		Directory::ensure($this->stateDir);
 
 		$target = $this->stateFile($cursor->path);
 		// Written whole and then renamed: a crash halfway through must not leave behind a state
