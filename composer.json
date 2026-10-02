@@ -1,0 +1,34 @@
+{
+  "name": "php-bug-catcher/perf-collector",
+  "type": "library",
+  "license": "MIT",
+  "description": "Per-request performance collector for Bug Catcher: an auto_prepend_file hook and a cron aggregator, with no PHP extension and no dependencies",
+  "keywords": ["performance", "monitoring", "profiling", "bug-catcher"],
+  "minimum-stability": "stable",
+  "require": {
+    "php": ">=8.2",
+    "ext-curl": "*",
+    "ext-json": "*"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.5"
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "autoload": {
+    "psr-4": {
+      "BugCatcher\\PerfCollector\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "BugCatcher\\PerfCollector\\Tests\\": "tests/"
+    }
+  },
+  "bin": ["bin/bc-perf-aggregate"],
+  "scripts": {
+    "phpunit": "vendor/bin/phpunit",
+    "coverage": "vendor/bin/phpunit --coverage-html build/reports/html"
+  }
+}
