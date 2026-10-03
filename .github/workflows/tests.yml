@@ -1,0 +1,51 @@
+# The package has no services to stand up: the hook writes to a file and the aggregator reads one.
+# What CI is here for is the matrix - this code runs inside whatever PHP the monitored application
+# happens to be on, which is the one thing a single developer machine cannot check.
+name: Tests
+
+on: [ push, pull_request ]
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php-versions }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-versions: [ "8.3", "8.4", "8.5" ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: curl, json
+          # the overhead budget is measured in microseconds; Xdebug multiplies every function
+          # call and the benchmark skips itself when it is loaded
+          coverage: none
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-
+
+      - name: Install dependencies
+        run: composer update --prefer-stable --prefer-dist --no-interaction
+
+      - name: Tests
+        run: vendor/bin/phpunit
+
+      # The hook is the one file that is not autoloaded and runs in every request of somebody
+      # else's application, so it is linted on its own as well.
+      - name: Lint the hook
+        run: php -l hook/collector.php
