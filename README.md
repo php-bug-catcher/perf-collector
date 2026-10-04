@@ -46,6 +46,26 @@ bcperf.sample_rate = 1
 bcperf.cli = 0
 ```
 
+### What a command-line run is called
+
+A request is named by its URI. A command has none, so it is named `/<script>/<job>`: the basename
+of the script, plus the first argument that is not an option.
+
+```
+php C:\inetpub\wwwroot\cron\execute.php Cron\Money\SyncAllPayments -test 0
+  ->  /execute.php/Cron/Money/SyncAllPayments
+```
+
+That argument is the whole point. `execute.php` is often the single entry point of a hundred cron
+tasks, and without it they all aggregate into one path — a dashboard that cannot tell
+`SyncAllPayments` from `ParseEmail` says nothing about either. The directory, the drive letter and
+the slashes are dropped because the same script gets written `C:\app\execute.php` in one scheduled
+task and `c:/app/execute.php` in the next, and as paths those are two rows for one job. Only the
+*first* non-option argument is taken: `-isps 1,6` says how a task was asked to run, not which task
+it was, and folding every argument in would mean a path per invocation.
+
+A CLI worker that sets `REQUEST_URI` itself is believed over its own command line.
+
 One request becomes one line:
 
 ```json

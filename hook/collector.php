@@ -107,6 +107,47 @@ if (!function_exists('bcperf_rusage')) {
 	}
 }
 
+if (!function_exists('bcperf_cli_path')) {
+	/**
+	 * What to call a command-line run, which has no request URI to be called after.
+	 *
+	 * The script alone is not enough: `execute.php` is the single entry point of a hundred cron
+	 * tasks and the only thing telling them apart is the argument naming the one to run. Without
+	 * that argument every task on the machine aggregates into one path, and a dashboard that
+	 * cannot separate `SyncAllPayments` from `ParseEmail` says nothing about either.
+	 *
+	 * Deliberately narrow about what it takes:
+	 *
+	 * - The **basename** of the script, not the path it was invoked by. The same task is written
+	 *   `C:\app\execute.php` in one scheduled task and `c:/app/execute.php` in the next, and as a
+	 *   path those are two different strings for one script - so the directory, the drive letter
+	 *   and the slashes all go.
+	 * - **One** argument, the first that is not an option: `-isps 1,6` says how a task was asked
+	 *   to run, not which task it was, and folding every argument in would mean a path per
+	 *   invocation. A path per invocation is what `perf.rollup_path_cap` exists to throw away.
+	 *
+	 * Backslashes in it become slashes, so a namespaced class name reads as - and normalises
+	 * like - the path it is standing in for.
+	 */
+	function bcperf_cli_path(): string {
+		$argv   = (array) ($_SERVER['argv'] ?? []);
+		$script = strtr((string) ($argv[0] ?? $_SERVER['SCRIPT_NAME'] ?? ''), '\\', '/');
+		$path   = '/' . substr($script, strrpos($script, '/') === false ? 0 : strrpos($script, '/') + 1);
+
+		for ($i = 1, $count = count($argv); $i < $count; $i++) {
+			$argument = (string) $argv[$i];
+
+			if ($argument === '' || $argument === '--' || $argument[0] === '-') {
+				continue;
+			}
+
+			return $path . '/' . ltrim(strtr($argument, '\\', '/'), '/');
+		}
+
+		return $path;
+	}
+}
+
 if (!function_exists('bcperf_build_line')) {
 	/**
 	 * One request as one JSON line. The keys are short because this is written once per request
@@ -117,7 +158,10 @@ if (!function_exists('bcperf_build_line')) {
 	 * @param array<string,int>|null $after  the same, taken in shutdown
 	 */
 	function bcperf_build_line(float $startedAt, ?array $before, float $endedAt, ?array $after, int $weight): ?string {
-		$uri      = $_SERVER['REQUEST_URI'] ?? $_SERVER['SCRIPT_NAME'] ?? '';
+		// A request is named by its URI; a command-line run has none and is named after the command
+		// - see {@see bcperf_cli_path()}. REQUEST_URI is still preferred where it exists, because a
+		// CLI worker that sets one is telling us what it is standing in for.
+		$uri      = $_SERVER['REQUEST_URI'] ?? (PHP_SAPI === 'cli' ? bcperf_cli_path() : $_SERVER['SCRIPT_NAME'] ?? '');
 		$queryAt  = strpos($uri, '?');
 		$path     = $queryAt === false ? $uri : substr($uri, 0, $queryAt);
 		$query    = $queryAt === false ? (string) ($_SERVER['QUERY_STRING'] ?? '') : substr($uri, $queryAt + 1);

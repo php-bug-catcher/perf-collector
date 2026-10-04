@@ -131,10 +131,78 @@ final class CollectorHookTest extends TestCase {
 
 		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
 
-		$this->assertSame('/srv/app/bin/console', $row['p']);
+		$this->assertSame('/console', $row['p']);
 		$this->assertSame('', $row['q']);
 		$this->assertSame('', $row['h']);
 		$this->assertSame('', $row['x']);
+	}
+
+	/**
+	 * The whole point of naming a CLI run after its command: one entry point, a hundred jobs.
+	 *
+	 * `execute.php` is what a cron scheduler runs for every task there is, so a path that stops at
+	 * the script tells you the machine ran something - not which task, not which one got slower.
+	 */
+	public function testACommandIsRecordedUnderTheJobItWasAskedToRun(): void {
+		$_SERVER = ['argv' => ['C:/inetpub/wwwroot/cron/execute.php', 'Cron\\Money\\SyncAllPayments']];
+
+		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
+
+		$this->assertSame('/execute.php/Cron/Money/SyncAllPayments', $row['p']);
+	}
+
+	/**
+	 * How a task was asked to run is not which task it was. Taking every argument would put a
+	 * path per invocation into a table whose whole retention story assumes a path per route.
+	 */
+	public function testOptionsAndTheirValuesAreLeftOutOfThePath(): void {
+		$_SERVER = ['argv' => ['execute.php', 'Cron\\Iptv\\Deactivate', '-isps', '1,6', '-delete-iptv', '1']];
+
+		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
+
+		$this->assertSame('/execute.php/Cron/Iptv/Deactivate', $row['p']);
+	}
+
+	/** `php -f script.php -- job`: PHP usually eats the separator, and we must not read it as the job. */
+	public function testTheArgumentSeparatorIsNotMistakenForTheJob(): void {
+		$_SERVER = ['argv' => ['execute.php', '--', 'Cron\\Rds\\Hosting\\Deactivate']];
+
+		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
+
+		$this->assertSame('/execute.php/Cron/Rds/Hosting/Deactivate', $row['p']);
+	}
+
+	/**
+	 * The same script is written `C:\app\execute.php` in one scheduled task and `c:/app/execute.php`
+	 * in the next. As paths those are two strings for one script, so neither the directory nor the
+	 * slashes survive - otherwise one task's numbers arrive split across two rows.
+	 */
+	public function testTheInvocationPathDoesNotChangeWhatTheJobIsCalled(): void {
+		$paths = [];
+
+		foreach (['C:\\inetpub\\wwwroot\\cron\\execute.php', 'c:/inetpub/wwwroot/cron/execute.php', 'execute.php'] as $script) {
+			$_SERVER = ['argv' => [$script, 'Cron\\Rds\\UpdateFlagsData']];
+			$paths[] = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1))['p'];
+		}
+
+		$this->assertSame(['/execute.php/Cron/Rds/UpdateFlagsData'], array_values(array_unique($paths)));
+	}
+
+	public function testACommandWithNoArgumentsIsStillNamedAfterItsScript(): void {
+		$_SERVER = ['argv' => ['C:/inetpub/wwwroot/cron/cron_tasks.php']];
+
+		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
+
+		$this->assertSame('/cron_tasks.php', $row['p']);
+	}
+
+	/** A CLI worker that says what it stands in for is believed over its own command line. */
+	public function testAnExplicitRequestUriStillWins(): void {
+		$_SERVER = ['argv' => ['worker.php', 'consume'], 'REQUEST_URI' => '/queue/email'];
+
+		$row = $this->decode(bcperf_build_line(10.0, [], 10.1, [], 1));
+
+		$this->assertSame('/queue/email', $row['p']);
 	}
 
 	public function testNumericExtraGlobalsAreMergedUnderTheirOwnKey(): void {

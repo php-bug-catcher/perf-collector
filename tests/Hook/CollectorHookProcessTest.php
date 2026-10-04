@@ -34,11 +34,23 @@ final class CollectorHookProcessTest extends TestCase {
 		$this->php($script, ['BCPERF_CLI' => '1', 'BCPERF_LOG' => $this->log]);
 
 		$row = $this->onlyLine();
-		$this->assertSame($script, $row['p']);
+		$this->assertSame('/' . basename($script), $row['p']);
 		$this->assertSame(503, $row['c']);
 		$this->assertSame(gethostname(), $row['n']);
 		$this->assertGreaterThan(0.02, $row['d']);
 		$this->assertGreaterThan(0, $row['i']);
+	}
+
+	/**
+	 * The unit test can arrange `$_SERVER['argv']`; only a real process proves PHP fills it in the
+	 * first place, which is what the whole naming of a cron task hangs on.
+	 */
+	public function testTheCommandsArgumentNamesTheRunInARealProcess(): void {
+		$script = $this->script('usleep(1000);');
+
+		$this->php($script, ['BCPERF_CLI' => '1', 'BCPERF_LOG' => $this->log], 'Cron\\Money\\SyncAllPayments', '-test', '0');
+
+		$this->assertSame('/' . basename($script) . '/Cron/Money/SyncAllPayments', $this->onlyLine()['p']);
 	}
 
 	public function testTheHookWritesNothingToTheApplicationsOutput(): void {
@@ -109,14 +121,16 @@ final class CollectorHookProcessTest extends TestCase {
 	}
 
 	/** @param array<string,string> $env */
-	private function php(string $script, array $env): string {
+	private function php(string $script, array $env, string ...$arguments): string {
 		$command = implode(' ', array_map(
 			static fn(string $name, string $value): string => $name . '=' . escapeshellarg($value),
 			array_keys($env),
 			$env,
 		)) . ' ' . escapeshellarg(PHP_BINARY)
 			. ' -d ' . escapeshellarg('auto_prepend_file=' . self::HOOK)
-			. ' ' . escapeshellarg($script) . ' 2>/dev/null';
+			. ' ' . escapeshellarg($script)
+			. ($arguments === [] ? '' : ' ' . implode(' ', array_map('escapeshellarg', $arguments)))
+			. ' 2>/dev/null';
 
 		return (string) shell_exec($command);
 	}
