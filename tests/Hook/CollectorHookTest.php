@@ -285,6 +285,60 @@ final class CollectorHookTest extends TestCase {
 		yield 'unknown placeholder is left alone' => ['/var/log/%Q.jsonl', '/var/log/%Q.jsonl'];
 	}
 
+	/**
+	 * Windows has no getrusage() at all, and the hook has to keep working there - everything
+	 * except the CPU split is measurable on any platform.
+	 */
+	public function testAPlatformWithoutGetrusageStillProducesALine(): void {
+		$this->givenRequest('/feed/?page=2');
+
+		$row = $this->decode(bcperf_build_line(1759400000.123456, null, 1759400000.561456, null, 1));
+
+		$this->assertSame(0.438, $row['d']);
+		$this->assertSame('/feed/', $row['p']);
+		$this->assertSame('www.site.com', $row['h']);
+	}
+
+	/**
+	 * Absent and not zero. The server subtracts CPU from wallclock to get the waiting band, so
+	 * zeroes would say every request on that machine waited for its whole duration.
+	 */
+	public function testWithoutGetrusageTheCpuKeysAreLeftOutRatherThanSentAsZero(): void {
+		$this->givenRequest('/feed/');
+
+		$row = $this->decode(bcperf_build_line(1759400000.123456, null, 1759400000.561456, null, 1));
+
+		$this->assertArrayNotHasKey('u', $row);
+		$this->assertArrayNotHasKey('s', $row);
+		$this->assertSame(['t', 'd', 'm', 'c', 'sv', 'h', 'p', 'q', 'x', 'i', 'w', 'n'], array_keys($row));
+	}
+
+	/** One measured end and one unmeasured end is not a delta anybody can take. */
+	public function testHalfAMeasurementIsNoMeasurement(): void {
+		$this->givenRequest('/feed/');
+
+		$opening = $this->decode(bcperf_build_line(1759400000.1, self::rusage(0.1, 0.0), 1759400000.5, null, 1));
+		$closing = $this->decode(bcperf_build_line(1759400000.1, null, 1759400000.5, self::rusage(0.1, 0.0), 1));
+
+		$this->assertArrayNotHasKey('u', $opening);
+		$this->assertArrayNotHasKey('u', $closing);
+	}
+
+	/**
+	 * The guard is the whole point of the helper: this used to be a bare getrusage() at the top
+	 * of every request, outside the shutdown handler's try/catch.
+	 */
+	public function testTheRusageHelperAnswersForThisPlatformWithoutThrowing(): void {
+		$rusage = bcperf_rusage();
+
+		if (function_exists('getrusage')) {
+			$this->assertIsArray($rusage);
+			$this->assertArrayHasKey('ru_utime.tv_sec', $rusage);
+		} else {
+			$this->assertNull($rusage);
+		}
+	}
+
 	private function givenRequest(string $uri): void {
 		$_SERVER = [
 			'REQUEST_URI'    => $uri,

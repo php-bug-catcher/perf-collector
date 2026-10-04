@@ -65,11 +65,11 @@ if (!function_exists('bcperf_boot')) {
 
 		$log     = bcperf_setting('LOG');
 		$started = microtime(true);
-		$rusage  = getrusage();
+		$rusage  = bcperf_rusage();
 
 		return static function () use ($log, $started, $rusage, $rate): void {
 			try {
-				$line = bcperf_build_line($started, $rusage, microtime(true), getrusage(), $rate);
+				$line = bcperf_build_line($started, $rusage, microtime(true), bcperf_rusage(), $rate);
 				if ($line !== null) {
 					bcperf_write($log, $line, $started);
 				}
@@ -79,25 +79,64 @@ if (!function_exists('bcperf_boot')) {
 	}
 }
 
+if (!function_exists('bcperf_rusage')) {
+	/**
+	 * CPU accounting where the platform has it, and null where it does not.
+	 *
+	 * `getrusage()` is POSIX and PHP does not define it on Windows at all. The call this replaces
+	 * sat outside the shutdown handler's try/catch and ran at the top of every request, so on IIS
+	 * it was not "no CPU numbers" - it was `Call to undefined function getrusage()` in front of
+	 * the application, in every single request. A monitoring hook that can take down what it
+	 * monitors is worse than no monitoring, and that is the contract this file opens with.
+	 *
+	 * Null rather than an array of zeroes, deliberately: {@see bcperf_build_line()} then leaves
+	 * `u` and `s` out of the line entirely. Zeroes would be indistinguishable from a request that
+	 * burned no CPU - which does not exist - and the server subtracts CPU from wallclock to get
+	 * the waiting band, so it would report the whole of every request as time spent waiting.
+	 *
+	 * @return array<string,int>|null
+	 */
+	function bcperf_rusage(): ?array {
+		static $available = null;
+
+		if ($available === null) {
+			$available = function_exists('getrusage');
+		}
+
+		return $available ? getrusage() : null;
+	}
+}
+
 if (!function_exists('bcperf_build_line')) {
 	/**
 	 * One request as one JSON line. The keys are short because this is written once per request
 	 * and the line has to stay under 4096 bytes.
 	 *
-	 * @param array<string,int> $before getrusage() taken on the way in
-	 * @param array<string,int> $after  getrusage() taken in shutdown
+	 * @param array<string,int>|null $before getrusage() taken on the way in, null where the
+	 *     platform has no getrusage() - see {@see bcperf_rusage()}
+	 * @param array<string,int>|null $after  the same, taken in shutdown
 	 */
-	function bcperf_build_line(float $startedAt, array $before, float $endedAt, array $after, int $weight): ?string {
+	function bcperf_build_line(float $startedAt, ?array $before, float $endedAt, ?array $after, int $weight): ?string {
 		$uri      = $_SERVER['REQUEST_URI'] ?? $_SERVER['SCRIPT_NAME'] ?? '';
 		$queryAt  = strpos($uri, '?');
 		$path     = $queryAt === false ? $uri : substr($uri, 0, $queryAt);
 		$query    = $queryAt === false ? (string) ($_SERVER['QUERY_STRING'] ?? '') : substr($uri, $queryAt + 1);
 
+		// Absent, not zero, where the platform cannot measure CPU. The aggregator sums what it is
+		// given and the server reads wallclock minus CPU as time spent waiting, so a zero here
+		// would turn every Windows request into one that waited for its whole duration. Spread
+		// in place rather than appended, because the order of these keys is pinned.
+		$cpu = $before !== null && $after !== null
+			? [
+				'u' => round(bcperf_cpu_delta($before, $after, 'utime'), 6),
+				's' => round(bcperf_cpu_delta($before, $after, 'stime'), 6),
+			]
+			: [];
+
 		$row = [
 			't'  => round($startedAt, 3),
 			'd'  => round($endedAt - $startedAt, 6),
-			'u'  => round(bcperf_cpu_delta($before, $after, 'utime'), 6),
-			's'  => round(bcperf_cpu_delta($before, $after, 'stime'), 6),
+			...$cpu,
 			'm'  => memory_get_peak_usage(true),
 			'c'  => (int) http_response_code(),
 			'sv' => bcperf_scheme(),
