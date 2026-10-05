@@ -1,12 +1,18 @@
 <?php
 
 /**
- * Bug Catcher performance collector - the auto_prepend_file hook.
+ * Bug Catcher performance collector - the hook.
  *
- * This file is loaded by PHP before the application's autoloader, so it may not require anything
- * and lives outside PSR-4 on purpose. It runs in every single request, which is why all it does
- * is measure and append one line: normalisation, histograms, grouping and HTTP all belong to
- * bin/bc-perf-aggregate, which runs from cron and not from a request.
+ * Two ways in, and they have to report the same request: `auto_prepend_file` in php.ini, or a
+ * `require` of this file in the application's entry point for an installation that has no php.ini
+ * to edit. That second mode is why the duration is measured from REQUEST_TIME_FLOAT rather than
+ * from the moment this file ran, and why {@see bcperf_inline_setting()} exists at all.
+ *
+ * Prepended, this file is loaded before the application's autoloader; required, it has to behave
+ * as if it were. So it may not require anything, and it lives outside PSR-4 on purpose. It runs in
+ * every single request, which is why all it does is measure and append one line: normalisation,
+ * histograms, grouping and HTTP all belong to bin/bc-perf-aggregate, which runs from cron and not
+ * from a request.
  *
  * Budget: 100 us on the way in, 200 us in shutdown, excluding the write itself. The functions are
  * declared separately from the top-level code both to keep that budget honest - they are the unit
@@ -17,17 +23,47 @@
  * application it monitors is worse than no monitoring.
  */
 
+if (!function_exists('bcperf_inline_setting')) {
+	/**
+	 * The channel for an installation with no php.ini and no process environment: the entry point
+	 * fills $GLOBALS['_bcperf_config'] immediately before it requires this file. Last of the three
+	 * sources deliberately, so an operator who does have env or php.ini can override a value the
+	 * application ships without editing the application.
+	 */
+	function bcperf_inline_setting(string $name): string {
+		$config = $GLOBALS['_bcperf_config'] ?? null;
+		if (!is_array($config)) {
+			return '';
+		}
+
+		// Lower case like the php.ini keys; the upper case form is taken as well, because a hook
+		// left inert by a mistyped key is exactly the silent failure this mode has to avoid.
+		$value = $config[strtolower($name)] ?? $config[$name] ?? null;
+
+		// Numbers and bools pass, because `'cli' => true` and `'sample_rate' => 10` is what one
+		// actually writes in a PHP array; anything else is ignored rather than fatal.
+		if (is_bool($value)) {
+			return $value ? '1' : '';
+		}
+
+		return is_string($value) || is_int($value) || is_float($value) ? (string) $value : '';
+	}
+}
+
 if (!function_exists('bcperf_setting')) {
 	/**
-	 * Configuration comes from the environment or from php.ini, because at this point there is no
-	 * container, no .env parser and no autoloader to read anything with. `get_cfg_var()` rather
-	 * than `ini_get()`: bcperf.* are not directives PHP knows about, and ini_get() only answers
-	 * for registered ones.
+	 * Configuration comes from the environment, from php.ini or from $GLOBALS['_bcperf_config'],
+	 * because at this point there is no container, no .env parser and no autoloader to read
+	 * anything with. `get_cfg_var()` rather than `ini_get()`: bcperf.* are not directives PHP
+	 * knows about, and ini_get() only answers for registered ones.
 	 */
 	function bcperf_setting(string $name, string $default = ''): string {
 		$value = getenv('BCPERF_' . $name);
 		if ($value === false || $value === '') {
 			$value = get_cfg_var('bcperf.' . strtolower($name));
+		}
+		if (!is_string($value) || $value === '') {
+			$value = bcperf_inline_setting($name);
 		}
 
 		return is_string($value) && $value !== '' ? $value : $default;
@@ -63,9 +99,21 @@ if (!function_exists('bcperf_boot')) {
 			return null;
 		}
 
-		$log     = bcperf_setting('LOG');
-		$started = microtime(true);
-		$rusage  = bcperf_rusage();
+		$log = bcperf_setting('LOG');
+
+		// From the start of the request, not from the moment this file got its turn. That is what
+		// makes the two installation modes measure the same thing: whether an auto_prepend_file
+		// brought us in or a `require` on the first line of index.php did, the number is the same
+		// and where exactly that require sits stops mattering. The fallback is for a SAPI or a
+		// variables_order that leaves $_SERVER unpopulated.
+		$started = isset($_SERVER['REQUEST_TIME_FLOAT'])
+			? (float) $_SERVER['REQUEST_TIME_FLOAT']
+			: microtime(true);
+
+		// CPU, on the other hand, is measured from here: there is no getrusage() of the past to
+		// subtract from. PHP's own startup therefore reads as wallclock the request spent waiting,
+		// equally in both modes.
+		$rusage = bcperf_rusage();
 
 		return static function () use ($log, $started, $rusage, $rate): void {
 			try {
@@ -312,9 +360,13 @@ if (!function_exists('bcperf_write')) {
 	}
 }
 
-// A second prepend of the same file would otherwise register a second handler and write the
-// request twice; the function declarations above are idempotent on their own.
-if (!defined('BCPERF_ACTIVE')) {
+// A second load of the same file would otherwise register a second handler and write the request
+// twice; the function declarations above are idempotent on their own. The guard closes only once
+// the hook is actually switched on, though: otherwise a machine-wide auto_prepend_file with no
+// configuration of its own would lock out the `require` in index.php that brings the configuration
+// with it. Sampling happens behind the guard, so a request the sample rate declined stays declined
+// however many times the file is loaded.
+if (!defined('BCPERF_ACTIVE') && bcperf_enabled()) {
 	define('BCPERF_ACTIVE', true);
 
 	$bcperf_shutdown = bcperf_boot();

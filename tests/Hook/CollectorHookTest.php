@@ -20,7 +20,7 @@ final class CollectorHookTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->server = $_SERVER;
-		unset($GLOBALS['_bcperf_extra']);
+		unset($GLOBALS['_bcperf_extra'], $GLOBALS['_bcperf_config']);
 		foreach (['BCPERF_LOG', 'BCPERF_CLI', 'BCPERF_SAMPLE_RATE'] as $name) {
 			putenv($name);
 		}
@@ -28,7 +28,7 @@ final class CollectorHookTest extends TestCase {
 
 	protected function tearDown(): void {
 		$_SERVER = $this->server;
-		unset($GLOBALS['_bcperf_extra']);
+		unset($GLOBALS['_bcperf_extra'], $GLOBALS['_bcperf_config']);
 		foreach (['BCPERF_LOG', 'BCPERF_CLI', 'BCPERF_SAMPLE_RATE'] as $name) {
 			putenv($name);
 		}
@@ -305,6 +305,90 @@ final class CollectorHookTest extends TestCase {
 		yield 'zero' => ['0'];
 		yield 'negative' => ['-5'];
 		yield 'not a number' => ['often'];
+	}
+
+	/**
+	 * The channel for an installation with no php.ini and no process environment, where the entry
+	 * point requires the hook itself and hands it the configuration in a global.
+	 */
+	public function testTheInlineConfigurationIsEnoughToSwitchTheHookOn(): void {
+		$GLOBALS['_bcperf_config'] = ['log' => $this->tempFile(), 'cli' => '1'];
+
+		$this->assertTrue(bcperf_enabled());
+		$this->assertInstanceOf(\Closure::class, bcperf_boot());
+	}
+
+	#[DataProvider('inlineValues')]
+	public function testTheInlineConfigurationTakesWhatOneActuallyWritesInAPhpArray(mixed $value, string $expected): void {
+		$GLOBALS['_bcperf_config'] = ['sample_rate' => $value];
+
+		$this->assertSame($expected, bcperf_setting('SAMPLE_RATE'));
+	}
+
+	public static function inlineValues(): iterable {
+		yield 'string' => ['10', '10'];
+		yield 'int' => [10, '10'];
+		yield 'float' => [1.5, '1.5'];
+		yield 'true' => [true, '1'];
+		yield 'false' => [false, ''];
+		yield 'null is ignored' => [null, ''];
+		yield 'array is ignored' => [['10'], ''];
+		yield 'object is ignored' => [new \stdClass(), ''];
+		yield 'empty string falls through to the default' => ['', ''];
+	}
+
+	/** A hook left inert by a mistyped key is the silent failure this mode has to avoid. */
+	public function testTheInlineConfigurationAlsoAnswersForAnUpperCaseKey(): void {
+		$GLOBALS['_bcperf_config'] = ['SAMPLE_RATE' => '10'];
+
+		$this->assertSame('10', bcperf_setting('SAMPLE_RATE'));
+	}
+
+	public function testAnInlineConfigurationThatIsNotAnArrayIsIgnoredRatherThanFatal(): void {
+		$GLOBALS['_bcperf_config'] = 'log=/var/log/bcperf.jsonl';
+
+		$this->assertSame('fallback', bcperf_setting('LOG', 'fallback'));
+	}
+
+	/**
+	 * Inline is last of the three sources, so an operator who does have env or php.ini can override
+	 * a value the application ships without editing the application.
+	 */
+	public function testTheEnvironmentWinsOverTheInlineConfiguration(): void {
+		$GLOBALS['_bcperf_config'] = ['log' => '/inline/bcperf.jsonl'];
+		putenv('BCPERF_LOG=/env/bcperf.jsonl');
+
+		$this->assertSame('/env/bcperf.jsonl', bcperf_setting('LOG'));
+	}
+
+	/**
+	 * The duration is measured from the start of the request rather than from the moment the hook
+	 * ran, which is what lets a `require` in index.php report the same number an auto_prepend_file
+	 * would - wherever in the bootstrap that require happens to sit.
+	 */
+	public function testTheMeasurementStartsAtTheStartOfTheRequestNotAtTheHook(): void {
+		$this->givenRequest('/');
+		$_SERVER['REQUEST_TIME_FLOAT'] = 1759400000.123456;
+		$log                           = $this->tempFile();
+		putenv('BCPERF_CLI=1');
+		putenv('BCPERF_LOG=' . $log);
+
+		(bcperf_boot())();
+
+		$this->assertSame(1759400000.123, $this->decode((string) file_get_contents($log))['t']);
+	}
+
+	/** Some SAPIs, and a variables_order without "S", leave $_SERVER unpopulated. */
+	public function testWithoutRequestTimeFloatTheHookFallsBackToItsOwnClock(): void {
+		$this->givenRequest('/');
+		$log = $this->tempFile();
+		putenv('BCPERF_CLI=1');
+		putenv('BCPERF_LOG=' . $log);
+
+		(bcperf_boot())();
+
+		$this->assertArrayNotHasKey('REQUEST_TIME_FLOAT', $_SERVER);
+		$this->assertEqualsWithDelta(microtime(true), $this->decode((string) file_get_contents($log))['t'], 5.0);
 	}
 
 	public function testTheShutdownHandlerAppendsOneLinePerRequest(): void {

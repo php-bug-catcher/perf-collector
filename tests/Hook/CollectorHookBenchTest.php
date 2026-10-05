@@ -13,8 +13,9 @@ require_once __DIR__ . '/../../hook/collector.php';
  * test is the contract. The budget is 100 us on the way in and 200 us in shutdown, measured
  * without the disk write - the write is the application's own filesystem and not ours to promise.
  *
- * The hook measures from its own start, so it never shows up in the numbers it reports. These are
- * the numbers that tell you what it costs.
+ * The hook measures from the start of the request, so unlike before its own entry cost does fall
+ * inside the duration it reports - which is the sub-microsecond figure below, and the reason that
+ * figure has to stay a sub-microsecond one.
  */
 final class CollectorHookBenchTest extends TestCase {
 
@@ -29,6 +30,7 @@ final class CollectorHookBenchTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		unset($GLOBALS['_bcperf_config']);
 		putenv('BCPERF_CLI');
 		putenv('BCPERF_LOG');
 		putenv('BCPERF_SAMPLE_RATE');
@@ -55,6 +57,21 @@ final class CollectorHookBenchTest extends TestCase {
 		});
 
 		$this->assertLessThan(self::ENTRY_BUDGET_US, $cost, sprintf('non-sampled entry cost %.1f us', $cost));
+	}
+
+	/**
+	 * The install-without-php.ini path pays for two lookups that miss before the inline array
+	 * answers, in every request. It is the mode most installations will use, so it gets a budget
+	 * of its own rather than riding on the env one.
+	 */
+	public function testTheInlineConfiguredEntryPathStaysWithinTheSameBudget(): void {
+		$GLOBALS['_bcperf_config'] = ['log' => '/dev/null', 'cli' => '1'];
+
+		$cost = $this->measure(static function (): void {
+			bcperf_boot();
+		});
+
+		$this->assertLessThan(self::ENTRY_BUDGET_US, $cost, sprintf('inline entry path cost %.1f us', $cost));
 	}
 
 	public function testACliProcessPaysAlmostNothing(): void {

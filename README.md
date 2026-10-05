@@ -4,14 +4,14 @@ Per-request performance monitoring for any PHP application — wallclock, user a
 memory and HTTP status — with **no PHP extension, no daemon and no Composer dependencies** beyond
 `ext-curl`.
 
-It collects the way [phptop](https://github.com/bearstech/phptop) does: one `auto_prepend_file`
-line in `php.ini` writes a JSON line per request to a local file, and a cron job rolls those lines
-up into per-minute aggregates and ships them to a
+It collects the way [phptop](https://github.com/bearstech/phptop) does: a hook loaded at the very
+start of the request writes a JSON line per request to a local file, and a cron job rolls those
+lines up into per-minute aggregates and ships them to a
 [Bug Catcher](https://github.com/php-bug-catcher/bug-catcher) server. Nothing leaves the request.
 
 ```
-auto_prepend_file hook ──▶ /var/log/bcperf.jsonl ──▶ bc-perf-aggregate ──HTTP──▶ Bug Catcher
-     (one line/request)        (local only)            (cron, every minute)
+collector.php hook ──▶ /var/log/bcperf.jsonl ──▶ bc-perf-aggregate ──HTTP──▶ Bug Catcher
+  (one line/request)       (local only)            (cron, every minute)
 ```
 
 ## Install
@@ -22,28 +22,94 @@ composer require php-bug-catcher/perf-collector
 
 ### 1. The hook
 
-Point `auto_prepend_file` at `hook/collector.php` and tell it where to write:
+There are two ways to load `hook/collector.php`, and they measure the same thing: the duration is
+taken from `$_SERVER['REQUEST_TIME_FLOAT']`, so it covers the whole request either way and it does
+not matter at which point the hook itself got its turn.
+
+#### A. `auto_prepend_file` — when you can edit `php.ini`
 
 ```ini
 auto_prepend_file = /path/to/vendor/php-bug-catcher/perf-collector/hook/collector.php
+bcperf.log = /dev/shm/bcperf.jsonl
 ```
 
-The hook is configured from the environment or from `php.ini`, because it runs before any
-autoloader and has no container to read:
+This is the better of the two where it is available: it covers **every** PHP entry point on the
+machine, including the legacy scripts nobody is going to edit, and it survives a syntax error in
+the application's front controller — the request still leaves a line, with its 500.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `BCPERF_LOG` | — (hook does nothing) | Log path. Accepts a `strftime` pattern for daily rotation, e.g. `/var/log/bcperf-%Y%m%d.jsonl`. |
-| `BCPERF_SAMPLE_RATE` | `1` | `1` records everything, `10` every tenth request. The rate is written into the line as `w`, so the aggregator scales the counts back up. |
-| `BCPERF_CLI` | `0` | Record CLI processes too. Off by default — cron noise. |
+#### B. One `require` in your entry point — when you cannot
 
-Each one can also be written into `php.ini` in lower case under a `bcperf.` prefix — the
-environment wins when both are set:
+Shared hosting usually means no `php.ini` and no process environment either, so the hook takes its
+configuration from a global in that case. Put both in one file at the root of the project:
 
-```ini
-bcperf.log = /dev/shm/bcperf.jsonl
-bcperf.sample_rate = 1
-bcperf.cli = 0
+```php
+<?php
+// bcperf.php
+$GLOBALS['_bcperf_config'] = [
+	'log'         => __DIR__ . '/var/bcperf.jsonl',
+	'sample_rate' => 1,
+	'cli'         => true,
+];
+
+require __DIR__ . '/vendor/php-bug-catcher/perf-collector/hook/collector.php';
+```
+
+and require that file on the first line of every entry point:
+
+| Application | Where |
+|---|---|
+| Symfony | `public/index.php` and `bin/console`, straight after `<?php`, before `vendor/autoload_runtime.php` |
+| Laravel | `public/index.php` and `artisan` |
+| WordPress | `wp-config.php` |
+| Anything else | the front controller, and any cron script that does not go through it |
+
+```php
+<?php
+require __DIR__ . '/../bcperf.php';
+```
+
+Set `cli` only if you want console commands and cron jobs recorded — see
+[what a command-line run is called](#what-a-command-line-run-is-called). The same `bcperf.php` can
+later be pointed at by `auto_prepend_file` unchanged, if access to `php.ini` ever turns up.
+
+**What this mode does not cover**, honestly:
+
+- only the entry points you actually edited. A request that reaches some other `.php` file directly
+  is not measured.
+- a syntax error in the file you edited means the `require` never runs and the request leaves no
+  line at all. Under `auto_prepend_file` it would.
+- wherever `log` points has to be writable by both the web user and the CLI user, and must not sit
+  under the document root. `/dev/shm` is usually not available on shared hosting, so a `var/`
+  directory outside the web root is the realistic choice — it is slower, which
+  [costs you](#overhead).
+
+#### Settings
+
+Three settings, three channels. The environment wins, then `php.ini`, then the inline array — so an
+operator who does have env or `php.ini` can override what the application ships without touching
+the application's code.
+
+| Environment | `php.ini` | `$GLOBALS['_bcperf_config']` | Default | Meaning |
+|---|---|---|---|---|
+| `BCPERF_LOG` | `bcperf.log` | `log` | — (hook does nothing) | Log path. Accepts a `strftime` pattern for daily rotation, e.g. `/var/log/bcperf-%Y%m%d.jsonl`. |
+| `BCPERF_SAMPLE_RATE` | `bcperf.sample_rate` | `sample_rate` | `1` | `1` records everything, `10` every tenth request. The rate is written into the line as `w`, so the aggregator scales the counts back up. |
+| `BCPERF_CLI` | `bcperf.cli` | `cli` | `0` | Record CLI processes too. Off by default — cron noise. |
+
+In the inline array the keys are the lower-case `php.ini` names without the prefix, and `true`,
+`10` and `'10'` all mean what you would expect. Loading the hook twice records the request once,
+so a `require` on a machine that already has an `auto_prepend_file` is safe.
+
+### Is it working?
+
+The one failure mode worth knowing about is a hook that is simply inert — a log path that is not
+writable, or a `require` that never ran. It says nothing about it, on purpose: a monitoring hook
+must not write to the monitored application's output or error log. So check it yourself:
+
+```bash
+curl -s -o /dev/null http://localhost/          # or one page load in a browser
+tail -n1 var/bcperf.jsonl                       # a JSON line must have appeared
+bc-perf-aggregate --log=var/bcperf.jsonl --endpoint=https://bugcatcher.example.com \
+	--project=myapp --dry-run                   # what would be shipped
 ```
 
 ### What a command-line run is called
@@ -115,12 +181,24 @@ Measured on PHP 8.5, no Xdebug, one core of a laptop:
 |---|---|
 | CLI process, not recording (the `php bin/console` case) | **0.10 µs** |
 | Entry path, request not sampled | **0.29 µs** |
-| Entry path, request recorded | **0.83 µs** |
+| Entry path, request recorded, configured from the environment | **0.9 µs** |
+| Entry path, request recorded, configured inline | **1.1 µs** |
 | Shutdown, building the 227-byte line | **1.4 µs** |
 | Shutdown, appending it to tmpfs | **~2 µs** |
 
-The hook measures from its own start, so it never appears in the numbers it reports — these are
-what it costs you.
+The inline channel is the dearer of the two by the width of two lookups that miss — the environment
+and `php.ini` are consulted before the array is.
+
+The duration is measured from `REQUEST_TIME_FLOAT`, which is before PHP ran any of this, so unlike
+in earlier versions the hook's own entry cost does fall inside the number it reports. At a
+microsecond it is three orders of magnitude under the sampling noise of anything you are measuring.
+What it does mean is that `d` now covers PHP's startup and the application's bootstrap as well, so
+an installation upgrading from a version that measured from the hook will see its durations step up
+once. The server's regression baseline is a rolling one and relearns them by itself.
+
+CPU (`u`, `s`) is still measured from the hook onwards, because there is no `getrusage()` of the
+past to subtract from. PHP's own startup therefore reads as wallclock the request spent waiting.
+That is true of both installation modes equally.
 
 **Put the log on a fast filesystem.** The append is the only part whose cost is not ours: the same
 write that takes 2 µs on tmpfs took ~350 µs on a journalling filesystem on the same machine, which
