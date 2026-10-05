@@ -132,6 +132,15 @@ it was, and folding every argument in would mean a path per invocation.
 
 A CLI worker that sets `REQUEST_URI` itself is believed over its own command line.
 
+Both of those limits are limits of `argv`, not judgements about what is worth recording. Nothing
+here knows which option takes a value — so `php bin/console --env prod app:sync` reads `prod` as
+the job — nor that `app:imp` is an abbreviation of something, nor that one of those tokens is
+called `password`. A **Symfony** application knows all three, and
+[`php-bug-catcher/perf-collector-bundle`](https://github.com/php-bug-catcher/perf-collector-bundle)
+uses what it knows: the resolved command name plus every positional argument, minus a denylist of
+sensitive argument names, published through `REQUEST_URI` and therefore believed over anything
+worked out here. Install it if your commands are Symfony commands.
+
 One request becomes one line:
 
 ```json

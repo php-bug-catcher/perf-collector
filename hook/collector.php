@@ -176,6 +176,15 @@ if (!function_exists('bcperf_cli_path')) {
 	 *
 	 * Backslashes in it become slashes, so a namespaced class name reads as - and normalises
 	 * like - the path it is standing in for.
+	 *
+	 * Both of those limits are limits of `argv`, not judgements about what is worth recording.
+	 * Nothing here knows which option takes a value - so `php bin/console --env prod app:sync`
+	 * reads `prod` as the job - nor that `app:imp` is an abbreviation of something, nor that one
+	 * of those tokens is called `password`. An application that has booted a framework knows all
+	 * three, and `php-bug-catcher/perf-collector-bundle` therefore names a Symfony console run
+	 * from the resolved command plus **every** positional argument, and sets
+	 * {@see $_SERVER['REQUEST_URI']} to it. Which is believed over anything worked out here - see
+	 * {@see bcperf_build_line()}.
 	 */
 	function bcperf_cli_path(): string {
 		$argv   = (array) ($_SERVER['argv'] ?? []);
